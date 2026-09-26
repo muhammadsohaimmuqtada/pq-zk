@@ -25,7 +25,8 @@ struct Args {
     #[arg(long, default_value = "artifacts")]
     dir: String,
 
-    /// Proof kind: "core" (light, local verify) or "compressed" (for on-chain wrap)
+    /// Proof kind: "core" (light, local verify), "compressed" (reduced STARK),
+    /// or "groth16" (wrapped SNARK — the on-chain verifiable form)
     #[arg(long, default_value = "core")]
     mode: String,
 }
@@ -73,6 +74,8 @@ fn main() {
 
         let proof = match args.mode.as_str() {
             "core" => client.prove(&pkey, stdin).core().run().expect("proving failed"),
+            "compressed" => client.prove(&pkey, stdin).compressed().run().expect("proving failed"),
+            "groth16" => client.prove(&pkey, stdin).groth16().run().expect("proving failed"),
             _ => client.prove(&pkey, stdin).run().expect("proving failed"),
         };
         let prove_time = t0.elapsed() - setup_time;
