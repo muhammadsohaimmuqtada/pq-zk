@@ -1,7 +1,7 @@
 {
   "name": "pq-zk",
   "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
-  "postCreateCommand": "curl -L https://sp1.succinct.xyz | bash && ${HOME}/.sp1/bin/sp1up",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev golang-go; curl -L https://sp1.succinct.xyz | bash && ${HOME}/.sp1/bin/sp1up",
   "customizations": {
     "vscode": {
       "extensions": ["rust-lang.rust-analyzer"]
