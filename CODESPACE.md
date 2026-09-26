@@ -18,13 +18,15 @@ requirements) — use a **4-core / 16 GB** Codespace.
 
    ```bash
    cd script
-   cargo run --release -- --execute --dir artifacts
+   cargo run --release -- --execute --dir ../artifacts
    ```
 
-3. Prove (the real run — takes ~10–30 min on 4 cores):
+3. Prove (the real run — takes ~10–30 min on 4 cores). Run from `script/`
+   (the `--dir` path is relative to where you run it):
 
    ```bash
-   cargo run --release -- --prove --mode compressed --dir artifacts
+   cd /workspaces/pq-zk/script
+   cargo run --release -- --prove --mode compressed --dir ../artifacts
    ```
 
    On success it prints proving time, proof size, the verification key, and
