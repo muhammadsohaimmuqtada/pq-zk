@@ -13,6 +13,14 @@ TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
 echo "==> machine: $(nproc) cores, ${TOTAL_MB} MB RAM"
 echo "==> cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo '?') | memory.swap.max: $(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null || echo '?')"
 
+# Free RAM: the IDE's rust-analyzer sits on ~2.5 GB and the prover needs it.
+# (Reversible: reinstall it from the Extensions panel when you want IntelliSense.)
+if command -v code >/dev/null 2>&1 && code --list-extensions 2>/dev/null | grep -q rust-lang.rust-analyzer; then
+  echo "==> disabling rust-analyzer to free ~2.5 GB RAM"
+  code --uninstall-extension rust-lang.rust-analyzer >/dev/null 2>&1 || true
+  pkill -f rust-analyzer 2>/dev/null || true
+fi
+
 GO_MAJOR=$(go version 2>/dev/null | awk '{print $3}' | sed 's/^go//' | cut -d. -f1 || true)
 if [ -z "$GO_MAJOR" ] || [ "$GO_MAJOR" -lt 21 ]; then
   echo "==> installing Go 1.23.4 (SP1's gnark-ffi needs Go >= 1.21)"
