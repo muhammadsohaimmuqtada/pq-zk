@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
-# One-command proof runner for the pq-zk Codespace (v3: evidence edition).
-# Fixes missing host deps, tries a swapfile, proves the ML-DSA guest as
-# groth16 with compressed/core fallbacks, and on failure prints kernel OOM
-# evidence + peak memory so the next fix is a certainty, not a guess.
+# One-command proof runner for the pq-zk Codespace / Kaggle (v4).
+# - fixes host deps (Go >= 1.21, protoc, libclang, SP1 toolchain)
+# - tries a swapfile when allowed
+# - big machine (>=27 GB): one groth16 run with SP1 defaults
+# - small machine (16 GB class): a shard-size ladder + single worker to fit
+# - samples RAM + top processes during proving; on failure dumps OOM evidence
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
-echo "==> machine: $(nproc) cores"
-free -h
+TOTAL_MB=$(free -m | awk '/^Mem:/{print $2}')
+echo "==> machine: $(nproc) cores, ${TOTAL_MB} MB RAM"
 echo "==> cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo '?') | memory.swap.max: $(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null || echo '?')"
 
 GO_MAJOR=$(go version 2>/dev/null | awk '{print $3}' | sed 's/^go//' | cut -d. -f1 || true)
 if [ -z "$GO_MAJOR" ] || [ "$GO_MAJOR" -lt 21 ]; then
-  echo "==> installing Go 1.23.4 (SP1's gnark-ffi needs Go >= 1.21; apt's bookworm Go is 1.19)"
-  curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
-  sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
-  sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  echo "==> installing Go 1.23.4 (SP1's gnark-ffi needs Go >= 1.21)"
+  curl -fsSL https://go.dev/dl/go1.23.4.linux-amd64.tar.gz | $SUDO tar -C /usr/local -xz
+  $SUDO ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  $SUDO ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 fi
 
 if ! command -v protoc >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -q libclang.so; then
   echo "==> installing protobuf-compiler + libclang"
-  sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler libclang-dev
+  $SUDO apt-get update -qq && $SUDO apt-get install -y -qq protobuf-compiler libclang-dev
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "==> installing Rust (rustup)"
+  curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+  export PATH="$HOME/.cargo/bin:$PATH"
 fi
 
 if ! rustup toolchain list 2>/dev/null | grep -q succinct; then
@@ -34,35 +43,28 @@ if [ -f "$ROOT/artifacts/proof_calldata.hex" ]; then
   exit 0
 fi
 
-# Swap: the prover's peak can exceed the cgroup limit; a swapfile absorbs the
-# spike (slow but survives) if the cgroup allows swapping.
+# Swap: absorbs the prover's memory spike where the environment allows it.
 if [ "$(swapon --show 2>/dev/null | wc -l)" -eq 0 ]; then
   echo "==> trying to add a swapfile (12G, then 8G, then 4G)..."
   for sz in 12 8 4; do
-    if sudo fallocate -l ${sz}G /swapfile 2>/dev/null && sudo chmod 600 /swapfile \
-       && sudo mkswap -q /swapfile 2>/dev/null && sudo swapon /swapfile 2>/dev/null; then
+    if $SUDO fallocate -l ${sz}G /swapfile 2>/dev/null && $SUDO chmod 600 /swapfile \
+       && $SUDO mkswap -q /swapfile 2>/dev/null && $SUDO swapon /swapfile 2>/dev/null; then
       echo "==> swap ON: ${sz}G"
       break
     fi
-    sudo rm -f /swapfile 2>/dev/null
+    $SUDO rm -f /swapfile 2>/dev/null
   done
 fi
-swapon --show || echo "==> no swap available (cgroup may forbid it)"
+swapon --show || echo "==> no swap available"
 
-# Memory levers (SP1 6.8.1 defaults assume a bigger box: SHARD_SIZE 2^24,
-# MEMORY_LIMIT 24 GiB). Smaller shards + fewer parallel workers cut peak RAM.
-export SHARD_SIZE=1048576
-export MEMORY_LIMIT=1073741824
-export SP1_WORKER_NUM_CORE_WORKERS=2
-# Phase-level logs so we can see WHERE the run dies.
 export RUST_LOG=info
 
 run_prove() {
   local mode="$1"
-  echo "==> [$mode] proving..."
+  echo "==> [$mode] proving (SHARD_SIZE=${SHARD_SIZE:-default}, workers=${SP1_WORKER_NUM_CORE_WORKERS:-default})..."
   rm -f /tmp/mem.log
   ( while true; do
-      echo "$(date +%T) $(free -m | awk '/^Mem:/{print "used=" $3 "M avail=" $7 "M"}')" >> /tmp/mem.log
+      echo "$(date +%T) $(free -m | awk '/^Mem:/{printf "used=%dM avail=%dM", $3, $7}') | top: $(ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{printf "%s=%.0fMB ", $2, $1/1024}')" >> /tmp/mem.log
       sleep 3
     done ) &
   local sampler=$!
@@ -73,14 +75,25 @@ run_prove() {
   return $rc
 }
 
-echo "==> proving (groth16 -> compressed -> core)"
 cd "$ROOT/script" || exit 1
-if ! run_prove groth16; then
-  echo "==> groth16 failed — retrying as compressed"
-  if ! run_prove compressed; then
-    echo "==> compressed failed — retrying as core"
-    run_prove core
-  fi
+
+if [ "$TOTAL_MB" -ge 27000 ]; then
+  echo "==> big machine — SP1 defaults, single groth16 run"
+  unset SHARD_SIZE MEMORY_LIMIT
+  export SP1_WORKER_NUM_CORE_WORKERS=4
+  run_prove groth16 || true
+else
+  echo "==> 16 GB-class machine — memory ladder (smallest shards, one worker)"
+  export MEMORY_LIMIT=1073741824
+  export SP1_WORKER_NUM_CORE_WORKERS=1
+  export SP1_WORKER_CORE_BUFFER_SIZE=1
+  # descending shard sizes shrink the per-shard trace; modes from lightest
+  # artifact to the on-chain verifiable one
+  for step in compressed:262144 compressed:65536 core:262144 groth16:262144; do
+    mode="${step%%:*}"; export SHARD_SIZE="${step##*:}"
+    if run_prove "$mode"; then echo "==> SUCCESS: mode=$mode SHARD_SIZE=$SHARD_SIZE"; break; fi
+    echo "==> attempt failed: mode=$mode SHARD_SIZE=$SHARD_SIZE"
+  done
 fi
 
 if [ ! -f "$ROOT/artifacts/proof_calldata.hex" ]; then
@@ -90,16 +103,14 @@ if [ ! -f "$ROOT/artifacts/proof_calldata.hex" ]; then
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "==> cgroup peak usage: $(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo '?') bytes"
   echo "==> cgroup oom events: $(cat /sys/fs/cgroup/memory.events 2>/dev/null | tr '\n' ' ')"
-  echo "==> kernel OOM records:"
-  sudo dmesg 2>/dev/null | grep -iE "oom|killed process" | tail -6 || echo "(dmesg unavailable)"
-  echo "==> last memory samples:"
-  tail -8 /tmp/mem.log 2>/dev/null
+  echo "==> last memory samples (with the top memory owners):"
+  tail -10 /tmp/mem.log 2>/dev/null
   echo "!! Paste ALL of the output above back into the chat."
   exit 1
 fi
 
 cd "$ROOT" || exit 1
 git add artifacts/
-git commit -m "proof artifacts from codespace" || echo "==> nothing new to commit"
-git push || echo "==> push failed — run 'git push' again later"
-echo "==> done — proof artifacts are in artifacts/ and pushed to the repo"
+git commit -m "proof artifacts" || echo "==> nothing new to commit"
+git push 2>/dev/null || echo "==> no git credentials here — download artifacts/{proof_calldata.hex,public_values.hex,vkey.txt} manually (see KAGGLE.md)"
+echo "==> done — proof artifacts are in artifacts/"
