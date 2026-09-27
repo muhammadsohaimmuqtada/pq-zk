@@ -34,6 +34,17 @@ if ! command -v protoc >/dev/null 2>&1 || ! ldconfig -p 2>/dev/null | grep -q li
   $SUDO apt-get update -qq && $SUDO apt-get install -y -qq protobuf-compiler libclang-dev
 fi
 
+# SP1's protos import google/protobuf/empty.proto; some distro builds (e.g.
+# Colab's) ship protoc without the well-known types — fetch them directly.
+if command -v protoc >/dev/null 2>&1 && [ ! -f /usr/include/google/protobuf/empty.proto ]; then
+  echo "==> fetching protobuf well-known types (missing from this distro's protoc)"
+  $SUDO mkdir -p /usr/include/google/protobuf
+  for p in any api descriptor duration empty field_mask source_context struct timestamp type wrappers; do
+    $SUDO curl -fsSL "https://raw.githubusercontent.com/protocolbuffers/protobuf/v29.3/src/google/protobuf/${p}.proto" \
+      -o "/usr/include/google/protobuf/${p}.proto" || true
+  done
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   echo "==> installing Rust (rustup)"
   curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
