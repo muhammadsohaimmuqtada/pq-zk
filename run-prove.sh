@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# One-command proof runner for the pq-zk Codespace / Kaggle (v4).
+# One-command proof runner for the pq-zk Codespace / Colab / Kaggle (v5).
 # - fixes host deps (Go >= 1.21, protoc, libclang, SP1 toolchain)
-# - tries a swapfile when allowed
-# - big machine (>=27 GB): one groth16 run with SP1 defaults
-# - small machine (16 GB class): a shard-size ladder + single worker to fit
-# - samples RAM + top processes during proving; on failure dumps OOM evidence
+# - frees the IDE's RAM (rust-analyzer) and adds swap where allowed
+# - v5 fix: SP1's real shard-boundary knobs. SP1CoreOpts::default() (sp1-core-executor)
+#   reads ELEMENT_THRESHOLD / HEIGHT_THRESHOLD — the actual shard split points — plus
+#   SHARD_SIZE (an allocation hint only) and TRACE_CHUNK_SLOTS (executor trace ring).
+#   The v4 ladder only set SHARD_SIZE, so shards never actually shrank; that was the
+#   cause of six identical OOM deaths on the codespace.
+# - sequence: fib groth16 (tiny; probes whether the fixed-size SNARK wrap fits this
+#   box AND yields an on-chain-verifiable artifact) -> ML-DSA groth16 ladder ->
+#   ML-DSA compressed fallback
+# - samples RAM + top processes; on failure dumps OOM evidence
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
@@ -57,10 +63,7 @@ if ! rustup toolchain list 2>/dev/null | grep -q succinct; then
   "${HOME}/.sp1/bin/sp1up"
 fi
 
-if [ -f "$ROOT/artifacts/proof_calldata.hex" ]; then
-  echo "==> artifacts/proof_calldata.hex already exists — nothing to do"
-  exit 0
-fi
+export RUST_LOG=info
 
 # Swap: absorbs the prover's memory spike where the environment allows it.
 if [ "$(swapon --show 2>/dev/null | wc -l)" -eq 0 ]; then
@@ -76,60 +79,94 @@ if [ "$(swapon --show 2>/dev/null | wc -l)" -eq 0 ]; then
 fi
 swapon --show || echo "==> no swap available"
 
-export RUST_LOG=info
+if [ "$TOTAL_MB" -ge 27000 ]; then
+  echo "==> big machine — SP1 defaults (tuned for 24 GB-class)"
+  unset ELEMENT_THRESHOLD HEIGHT_THRESHOLD SHARD_SIZE TRACE_CHUNK_SLOTS MEMORY_LIMIT
+  export SP1_WORKER_NUM_CORE_WORKERS=4
+else
+  echo "==> 16 GB-class machine — real shard-boundary knobs (v5)"
+  export ELEMENT_THRESHOLD=$((1 << 24))            # 16.7M trace elements/shard (SP1 default 402M)
+  export HEIGHT_THRESHOLD=$((1 << 18))             # 262k rows/shard (SP1 default 4.2M)
+  export SHARD_SIZE=$HEIGHT_THRESHOLD              # allocation hint, matched to the boundary
+  export TRACE_CHUNK_SLOTS=2                       # executor trace ring ~0.6 GiB (default ~1.4)
+  export MEMORY_LIMIT=$((6 * 1024 * 1024 * 1024))  # clean abort instead of death by SIGTERM
+  export SP1_WORKER_NUM_CORE_WORKERS=1
+  export SP1_WORKER_CORE_BUFFER_SIZE=1
+fi
 
-run_prove() {
-  local mode="$1"
-  echo "==> [$mode] proving (SHARD_SIZE=${SHARD_SIZE:-default}, workers=${SP1_WORKER_NUM_CORE_WORKERS:-default})..."
+# run_one <script-dir> <mode> <artifacts-dir> <label>
+run_one() {
+  local sdir="$1" mode="$2" artdir="$3" label="$4"
+  echo "==> [$label] proving mode=$mode (ELEMENT_THRESHOLD=${ELEMENT_THRESHOLD:-default}, HEIGHT_THRESHOLD=${HEIGHT_THRESHOLD:-default}, workers=${SP1_WORKER_NUM_CORE_WORKERS:-default})..."
   rm -f /tmp/mem.log
   ( while true; do
       echo "$(date +%T) $(free -m | awk '/^Mem:/{printf "used=%dM avail=%dM", $3, $7}') | top: $(ps -eo rss=,comm= --sort=-rss 2>/dev/null | head -3 | awk '{printf "%s=%.0fMB ", $2, $1/1024}')" >> /tmp/mem.log
       sleep 3
     done ) &
   local sampler=$!
-  cargo run --release -- --prove --mode "$mode" --dir ../artifacts
+  ( cd "$ROOT/$sdir" && cargo run --release -- --prove --mode "$mode" --dir "$artdir" )
   local rc=$?
   kill "$sampler" 2>/dev/null
-  echo "==> [$mode] exit code: $rc | peak RAM used (MB): $(sed 's/.*used=//;s/M .*//' /tmp/mem.log 2>/dev/null | sort -rn | head -1)"
+  echo "==> [$label] exit code: $rc | peak RAM used (MB): $(sed 's/.*used=//;s/M .*//' /tmp/mem.log 2>/dev/null | sort -rn | head -1)"
   return $rc
 }
 
-cd "$ROOT/script" || exit 1
-
-if [ "$TOTAL_MB" -ge 27000 ]; then
-  echo "==> big machine — SP1 defaults, single groth16 run"
-  unset SHARD_SIZE MEMORY_LIMIT
-  export SP1_WORKER_NUM_CORE_WORKERS=4
-  run_prove groth16 || true
+# --- Step 1: fib groth16 — the wrap-feasibility probe -------------------------
+# The groth16 wrap circuit is fixed-size regardless of the guest program, so a
+# tiny fib proof answers "does the SNARK wrap fit this box?" in minutes. It
+# also produces an on-chain-verifiable artifact (proof_calldata.hex) that the
+# gas-measurement leg can use directly.
+FIB_OK=0
+if [ -f "$ROOT/fib-demo/artifacts/proof_calldata.hex" ]; then
+  FIB_OK=1
+  echo "==> fib artifact already present — skipping wrap probe"
+elif run_one fib-demo/script groth16 ../artifacts "fib wrap-probe"; then
+  FIB_OK=1
+  echo "==> WRAP FEASIBLE: the SNARK wrap fits this box"
 else
-  echo "==> 16 GB-class machine — memory ladder (smallest shards, one worker)"
-  export MEMORY_LIMIT=1073741824
-  export SP1_WORKER_NUM_CORE_WORKERS=1
-  export SP1_WORKER_CORE_BUFFER_SIZE=1
-  # descending shard sizes shrink the per-shard trace; modes from lightest
-  # artifact to the on-chain verifiable one
-  for step in compressed:262144 compressed:65536 core:262144 groth16:262144; do
-    mode="${step%%:*}"; export SHARD_SIZE="${step##*:}"
-    if run_prove "$mode"; then echo "==> SUCCESS: mode=$mode SHARD_SIZE=$SHARD_SIZE"; break; fi
-    echo "==> attempt failed: mode=$mode SHARD_SIZE=$SHARD_SIZE"
+  echo "==> fib groth16 failed — the SNARK wrap itself does not fit; skipping ML-DSA groth16 attempts"
+fi
+
+# --- Step 2: ML-DSA groth16 ladder (only if the wrap is feasible) -------------
+MLDSA_OK=0
+[ -f "$ROOT/artifacts/proof_calldata.hex" ] && MLDSA_OK=1
+if [ "$MLDSA_OK" -eq 0 ] && [ "$FIB_OK" -eq 1 ]; then
+  for knobs in "16777216 262144" "4194304 131072"; do
+    eth="${knobs%% *}"; h="${knobs##* }"
+    export ELEMENT_THRESHOLD="$eth" HEIGHT_THRESHOLD="$h" SHARD_SIZE="$h"
+    if run_one script groth16 ../artifacts "mldsa groth16 ETH=$eth/H=$h"; then
+      MLDSA_OK=1
+      break
+    fi
+    echo "==> attempt failed: mldsa groth16 ETH=$eth/H=$h"
   done
 fi
 
-if [ ! -f "$ROOT/artifacts/proof_calldata.hex" ]; then
+# --- Step 3: ML-DSA compressed fallback (feasibility artifact; not on-chain) --
+if [ "$MLDSA_OK" -eq 0 ] && [ ! -f "$ROOT/artifacts/proof_calldata.hex" ]; then
+  export ELEMENT_THRESHOLD=$((1 << 24)) HEIGHT_THRESHOLD=$((1 << 18)) SHARD_SIZE=$((1 << 18))
+  run_one script compressed ../artifacts "mldsa compressed (fallback)" \
+    || echo "==> compressed fallback failed too"
+fi
+
+# --- Report + push ------------------------------------------------------------
+if [ ! -f "$ROOT/artifacts/proof_calldata.hex" ] && [ "$FIB_OK" -ne 1 ]; then
   echo ""
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-  echo "!! PROVING FAILED — no proof_calldata.hex was produced.   !!"
+  echo "!! PROVING FAILED — no artifacts were produced.           !!"
+  echo "!! Paste ALL of the output above back into the chat.      !!"
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "==> cgroup peak usage: $(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo '?') bytes"
   echo "==> cgroup oom events: $(cat /sys/fs/cgroup/memory.events 2>/dev/null | tr '\n' ' ')"
   echo "==> last memory samples (with the top memory owners):"
   tail -10 /tmp/mem.log 2>/dev/null
-  echo "!! Paste ALL of the output above back into the chat."
   exit 1
 fi
 
 cd "$ROOT" || exit 1
-git add artifacts/
+git add artifacts/ fib-demo/artifacts/ 2>/dev/null
 git commit -m "proof artifacts" || echo "==> nothing new to commit"
-git push 2>/dev/null || echo "==> no git credentials here — download artifacts/{proof_calldata.hex,public_values.hex,vkey.txt} manually (see KAGGLE.md)"
-echo "==> done — proof artifacts are in artifacts/"
+git push 2>/dev/null || echo "==> no git credentials here — download the artifacts manually (see COLAB.md)"
+echo "==> done"
+[ "$FIB_OK" -eq 1 ] && echo "==> fib (on-chain gas fixture): fib-demo/artifacts/"
+[ -f "$ROOT/artifacts/proof_calldata.hex" ] && echo "==> ML-DSA proof: artifacts/" || echo "==> ML-DSA proof: NOT produced yet (see messages above)"

@@ -1,0 +1,4 @@
+warning: fib-script@0.1.0: rustc +succinct --version: "rustc 1.96.0-dev\n"
+warning: fib-script@0.1.0: fib-program built at 2026-09-26 12:43:14
+    Finished `release` profile [optimized] target(s) in 1.78s
+     Running `/home/kali/.zcode/workspace/default/pq-zk/target/release/fib-demo --prove --mode groth16 --dir ../artifacts`
