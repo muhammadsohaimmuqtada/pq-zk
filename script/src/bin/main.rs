@@ -22,6 +22,10 @@ struct Args {
     #[arg(long)]
     prove: bool,
 
+    /// Print the guest program's verification key (setup only, no proving).
+    #[arg(long)]
+    vkey: bool,
+
     #[arg(long, default_value = "artifacts")]
     dir: String,
 
@@ -36,9 +40,16 @@ fn main() {
     dotenv::dotenv().ok();
     let args = Args::parse();
 
-    if args.execute == args.prove {
-        eprintln!("Error: specify either --execute or --prove");
+    if !args.vkey && args.execute == args.prove {
+        eprintln!("Error: specify either --execute, --prove, or --vkey");
         std::process::exit(1);
+    }
+
+    if args.vkey {
+        let client = ProverClient::from_env();
+        let pkey = client.setup(PQ_ZK_ELF).expect("setup failed");
+        println!("vkey: {}", pkey.verifying_key().bytes32());
+        return;
     }
 
     let pk_bytes = std::fs::read(format!("{}/pk.bin", args.dir)).expect("pk.bin");
