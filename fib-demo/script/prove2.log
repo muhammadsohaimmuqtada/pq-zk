@@ -1,0 +1,28 @@
+warning: fib-script@0.1.0: rustc +succinct --version: "rustc 1.96.0-dev\n"
+warning: fib-script@0.1.0: fib-program built at 2026-09-26 12:43:14
+    Finished `release` profile [optimized] target(s) in 2.07s
+     Running `/home/kali/.zcode/workspace/default/pq-zk/target/release/fib-demo --prove --mode groth16 --dir ../artifacts`
+[2m2026-09-30T06:44:02.074089Z[0m [32m INFO[0m initializing cpu prover
+[2m2026-09-30T06:44:11.011970Z[0m [33m WARN[0m Memory usage is high: 81.14%, we recommend using the prover network
+[2m2026-09-30T06:44:21.012350Z[0m [33m WARN[0m Memory usage is high: 81.13%, we recommend using the prover network
+[2m2026-09-30T06:44:31.019102Z[0m [33m WARN[0m Memory usage is high: 87.63%, we recommend using the prover network
+[2m2026-09-30T06:44:41.019658Z[0m [33m WARN[0m Memory usage is high: 86.43%, we recommend using the prover network
+[2m2026-09-30T06:44:51.019891Z[0m [33m WARN[0m Memory usage is high: 89.56%, we recommend using the prover network
+[2m2026-09-30T06:45:01.044242Z[0m [33m WARN[0m Memory usage is high: 91.08%, we recommend using the prover network
+[2m2026-09-30T06:45:11.045284Z[0m [33m WARN[0m Memory usage is high: 88.88%, we recommend using the prover network
+[2m2026-09-30T06:45:21.050750Z[0m [33m WARN[0m Memory usage is high: 91.18%, we recommend using the prover network
+[2m2026-09-30T06:45:31.051087Z[0m [33m WARN[0m Memory usage is high: 89.95%, we recommend using the prover network
+[2m2026-09-30T06:45:41.051666Z[0m [33m WARN[0m Memory usage is high: 94.49%, we recommend using the prover network
+[2m2026-09-30T06:45:51.051915Z[0m [33m WARN[0m Memory usage is high: 90.47%, we recommend using the prover network
+[2m2026-09-30T06:46:01.052131Z[0m [33m WARN[0m Memory usage is high: 86.09%, we recommend using the prover network
+[2m2026-09-30T06:46:11.061507Z[0m [33m WARN[0m Memory usage is high: 84.97%, we recommend using the prover network
+[2m2026-09-30T06:46:21.066935Z[0m [33m WARN[0m Memory usage is high: 83.76%, we recommend using the prover network
+[2m2026-09-30T06:46:31.067218Z[0m [33m WARN[0m Memory usage is high: 81.64%, we recommend using the prover network
+[2m2026-09-30T06:46:33.418896Z[0m [32m INFO[0m starting proof generation [3mmode[0m[2m=[0mGroth16
+[2m2026-09-30T06:47:41.075176Z[0m [33m WARN[0m Memory usage is high: 81.81%, we recommend using the prover network
+[2m2026-09-30T06:48:21.081049Z[0m [33m WARN[0m Memory usage is high: 90.49%, we recommend using the prover network
+[2m2026-09-30T06:48:31.088414Z[0m [33m WARN[0m Memory usage is high: 91.16%, we recommend using the prover network
+[2m2026-09-30T06:48:41.088622Z[0m [33m WARN[0m Memory usage is high: 91.69%, we recommend using the prover network
+[2m2026-09-30T06:48:51.088856Z[0m [33m WARN[0m Memory usage is high: 91.38%, we recommend using the prover network
+[2m2026-09-30T06:49:01.091285Z[0m [33m WARN[0m Memory usage is high: 88.96%, we recommend using the prover network
+[2m2026-09-30T06:49:11.096360Z[0m [33m WARN[0m Memory usage is high: 86.97%, we recommend using the prover network
